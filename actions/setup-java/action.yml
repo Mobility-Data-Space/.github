@@ -1,0 +1,21 @@
+name: Setup Java
+description: Install the JDK used across Mobility Data Space Gradle builds.
+
+inputs:
+  java-version:
+    description: The Java version to install.
+    required: false
+    default: '25'
+  distribution:
+    description: The JDK distribution to install.
+    required: false
+    default: 'temurin'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK ${{ inputs.java-version }} (${{ inputs.distribution }})
+      uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: ${{ inputs.distribution }}

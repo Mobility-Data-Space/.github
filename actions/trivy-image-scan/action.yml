@@ -1,0 +1,67 @@
+name: Trivy Image Scan
+description: >-
+  Run a Trivy vulnerability scan against a container image, uploading a report
+  and failing the build on HIGH/CRITICAL findings.
+
+inputs:
+  image-ref:
+    description: Reference of the image to scan (e.g. ghcr.io/org/repo/runtime:tag).
+    required: true
+  scanners:
+    description: Comma-separated list of Trivy scanners to run.
+    required: false
+    default: vuln
+  report-severity:
+    description: Severities included in the (non-failing) report scan.
+    required: false
+    default: MEDIUM,HIGH,CRITICAL
+  fail-severity:
+    description: Severities that cause the failing scan to exit non-zero.
+    required: false
+    default: HIGH,CRITICAL
+  ignore-unfixed:
+    description: Whether the failing scan ignores vulnerabilities that have no fix available.
+    required: false
+    default: 'true'
+  trivyignore:
+    description: Path to a Trivy ignore file applied to the failing scan.
+    required: false
+    default: .trivyignore
+  report-name:
+    description: Name of the uploaded report artifact.
+    required: false
+    default: trivy-image
+  output-file:
+    description: File the report scan writes to and uploads.
+    required: false
+    default: trivy-image.txt
+
+runs:
+  using: composite
+  steps:
+    - name: Trivy image scan (report)
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      with:
+        image-ref: ${{ inputs.image-ref }}
+        format: table
+        output: ${{ inputs.output-file }}
+        severity: ${{ inputs.report-severity }}
+        scanners: ${{ inputs.scanners }}
+
+    - name: Upload scan report
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: ${{ inputs.report-name }}
+        path: ${{ inputs.output-file }}
+
+    - name: Fail on ${{ inputs.fail-severity }} vulnerabilities
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      with:
+        image-ref: ${{ inputs.image-ref }}
+        format: table
+        severity: ${{ inputs.fail-severity }}
+        ignore-unfixed: ${{ inputs.ignore-unfixed }}
+        exit-code: '1'
+        trivyignores: ${{ inputs.trivyignore }}
+        scanners: ${{ inputs.scanners }}
