@@ -1,25 +1,9 @@
 name: Trivy Filesystem Scan
 description: >-
-  Generate Gradle dependency lockfiles and run a Trivy filesystem scan against
-  them, uploading a report and failing the build on HIGH/CRITICAL findings.
+  Run a Trivy filesystem scan, uploading a report and failing the build on
+  HIGH/CRITICAL findings.
 
 inputs:
-  java-version:
-    description: The Java version used to generate the Gradle lockfiles.
-    required: false
-    default: '25'
-  gradle-lock-command:
-    description: The Gradle command that resolves and writes the dependency lockfiles Trivy scans.
-    required: false
-    default: ./gradlew resolveAndLockAll --write-locks
-  username:
-    description: Username used by Gradle to authenticate against GitHub Packages.
-    required: false
-    default: ${{ github.actor }}
-  token:
-    description: Token used by Gradle to authenticate against GitHub Packages.
-    required: false
-    default: ${{ github.token }}
   scanners:
     description: Comma-separated list of Trivy scanners to run.
     required: false
@@ -52,18 +36,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Set up JDK
-      uses: Mobility-Data-Space/.github/actions/setup-java@main
-      with:
-        java-version: ${{ inputs.java-version }}
-
-    - name: Generate Gradle lockfiles
-      shell: bash
-      run: ${{ inputs.gradle-lock-command }}
-      env:
-        USERNAME: ${{ inputs.username }}
-        TOKEN: ${{ inputs.token }}
-
     - name: Trivy filesystem scan (report)
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
       with:
