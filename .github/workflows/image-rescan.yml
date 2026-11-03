@@ -1,0 +1,172 @@
+name: Periodic Image Rescan
+
+# Reusable workflow that periodically rescans already-published container
+# images for vulnerabilities. It resolves the last N released tags (either from
+# the repository's GitHub releases or from a GHCR container package) and runs a
+# Trivy scan against every image/tag combination.
+#
+# Usage (from a caller repository):
+#
+#   jobs:
+#     rescan:
+#       uses: Mobility-Data-Space/.github/.github/workflows/image-rescan.yml@main
+#       with:
+#         images: '["mobility-data-space/mds-observer"]'
+#         tag-source: package
+#         package-name: mds-observer
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: >-
+          JSON array of image paths to scan, each relative to the registry
+          (e.g. '["mobility-data-space/mds-observer"]'). Every image is scanned
+          for every resolved tag.
+        required: true
+        type: string
+      tag-source:
+        description: Where released tags are resolved from - "package" (GHCR container versions) or "release" (GitHub releases).
+        required: false
+        type: string
+        default: package
+      package-name:
+        description: >-
+          GHCR container package name, required when tag-source is "package"
+          (e.g. "mds-observer" or "mds-catalog/mds-catalog"). Slashes are
+          URL-encoded automatically.
+        required: false
+        type: string
+        default: ''
+      org:
+        description: Organisation that owns the GHCR package (defaults to the caller repository owner).
+        required: false
+        type: string
+        default: ''
+      registry:
+        description: Container registry the images live in.
+        required: false
+        type: string
+        default: ghcr.io
+      tag-count:
+        description: Number of most recent released tags to rescan.
+        required: false
+        type: number
+        default: 3
+      checkout:
+        description: Whether to check out the caller repository (needed to pick up a committed .trivyignore).
+        required: false
+        type: boolean
+        default: true
+      scanners:
+        description: Comma-separated list of Trivy scanners to run.
+        required: false
+        type: string
+        default: vuln
+      report-severity:
+        description: Severities included in the (non-failing) report scan.
+        required: false
+        type: string
+        default: MEDIUM,HIGH,CRITICAL
+      fail-severity:
+        description: Severities that cause the scan to fail.
+        required: false
+        type: string
+        default: HIGH,CRITICAL
+      ignore-unfixed:
+        description: Whether the failing scan ignores vulnerabilities with no fix available.
+        required: false
+        type: boolean
+        default: true
+      trivyignore:
+        description: Path to a Trivy ignore file applied to the failing scan.
+        required: false
+        type: string
+        default: .trivyignore
+
+jobs:
+  fetch-tags:
+    name: Fetch last ${{ inputs.tag-count }} released tags
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+    steps:
+      - name: Resolve released image tags
+        id: tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_SOURCE: ${{ inputs.tag-source }}
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          ORG: ${{ inputs.org || github.repository_owner }}
+          REPO: ${{ github.repository }}
+          TAG_COUNT: ${{ inputs.tag-count }}
+        run: |
+          set -euo pipefail
+          if [ "$TAG_SOURCE" = "release" ]; then
+            tags=$(gh api \
+              "/repos/${REPO}/releases?per_page=100" \
+              --jq "[.[] | select(.draft == false and .prerelease == false) | .tag_name | ltrimstr(\"v\") | select(test(\"^[0-9]+\\\\.[0-9]+\\\\.[0-9]+$\"))] | .[0:${TAG_COUNT}]")
+          elif [ "$TAG_SOURCE" = "package" ]; then
+            if [ -z "$PACKAGE_NAME" ]; then
+              echo "::error::package-name is required when tag-source is 'package'"
+              exit 1
+            fi
+            encoded=$(printf '%s' "$PACKAGE_NAME" | sed 's|/|%2F|g')
+            tags=$(gh api \
+              "/orgs/${ORG}/packages/container/${encoded}/versions" \
+              --jq "[.[] | select(.metadata.container.tags | length > 0) | .metadata.container.tags[] | select(test(\"^[0-9]+\\\\.[0-9]+\\\\.[0-9]+$\"))] | unique | sort_by(split(\".\") | map(tonumber)) | reverse | .[0:${TAG_COUNT}]")
+          else
+            echo "::error::unknown tag-source '${TAG_SOURCE}' (expected 'package' or 'release')"
+            exit 1
+          fi
+          echo "Resolved tags: ${tags}"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+  rescan:
+    name: Scan ${{ matrix.image }}:${{ matrix.tag }}
+    needs: fetch-tags
+    if: ${{ needs.fetch-tags.outputs.tags != '[]' && needs.fetch-tags.outputs.tags != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(inputs.images) }}
+        tag: ${{ fromJson(needs.fetch-tags.outputs.tags) }}
+    steps:
+      - name: Checkout
+        if: ${{ inputs.checkout }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to the container registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build report identifier
+        id: id
+        env:
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ matrix.tag }}
+        run: |
+          safe=$(printf '%s' "${IMAGE}:${TAG}" | tr '/:' '--')
+          echo "name=trivy-rescan-${safe}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image with Trivy
+        uses: Mobility-Data-Space/.github/actions/trivy-image-scan@main
+        with:
+          image-ref: ${{ inputs.registry }}/${{ matrix.image }}:${{ matrix.tag }}
+          scanners: ${{ inputs.scanners }}
+          report-severity: ${{ inputs.report-severity }}
+          fail-severity: ${{ inputs.fail-severity }}
+          ignore-unfixed: ${{ inputs.ignore-unfixed }}
+          trivyignore: ${{ inputs.trivyignore }}
+          report-name: ${{ steps.id.outputs.name }}
+          output-file: ${{ steps.id.outputs.name }}.txt
