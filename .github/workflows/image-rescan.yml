@@ -78,6 +78,14 @@ on:
         required: false
         type: boolean
         default: true
+      fail-on-latest-only:
+        description: >-
+          Only fail the run on the latest released tag. Older tags are still
+          scanned and their report is uploaded, but they do not fail the run
+          (released images are never rebuilt, so their findings cannot be fixed).
+        required: false
+        type: boolean
+        default: true
       trivyignore:
         description: Path to a Trivy ignore file applied to the failing scan.
         required: false
@@ -93,6 +101,7 @@ jobs:
       packages: read
     outputs:
       tags: ${{ steps.tags.outputs.tags }}
+      latest: ${{ steps.tags.outputs.latest }}
     steps:
       - name: Resolve released image tags
         id: tags
@@ -124,6 +133,9 @@ jobs:
           fi
           echo "Resolved tags: ${tags}"
           echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          latest=$(printf '%s' "$tags" | jq -r '.[0] // ""')
+          echo "Latest tag: ${latest}"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
 
   rescan:
     name: Scan ${{ matrix.image }}:${{ matrix.tag }}
@@ -170,3 +182,4 @@ jobs:
           trivyignore: ${{ inputs.trivyignore }}
           report-name: ${{ steps.id.outputs.name }}
           output-file: ${{ steps.id.outputs.name }}.txt
+          fail: ${{ !inputs.fail-on-latest-only || matrix.tag == needs.fetch-tags.outputs.latest }}
